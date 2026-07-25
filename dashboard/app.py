@@ -91,6 +91,11 @@ MODEL_FILES = {
         "models/random_forest.joblib",
         "notebooks/Random_Forest.joblib",
     ],
+    "XGBoost": [
+        "backend/models/xgboost.joblib",
+        "models/xgboost.joblib",
+        "notebooks/xgboost.joblib",
+    ],
 }
 
 

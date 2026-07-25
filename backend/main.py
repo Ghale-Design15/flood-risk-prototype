@@ -56,7 +56,7 @@ METRICS_PATH = BASE_DIR.parent / "docs" / "metrics.json"
 MODELS: Dict[str, Dict[str, str]] = {
     "logistic_regression": {"name": "Logistic Regression", "file": "logistic_regression_real.joblib"},
     "random_forest": {"name": "Random Forest", "file": "random_forest.joblib"},
-    # "xgboost": {"name": "XGBoost", "file": "xgboost.joblib"},   # add when trained
+    "xgboost": {"name": "XGBoost", "file": "xgboost.joblib"},
 }
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "random_forest")
 
