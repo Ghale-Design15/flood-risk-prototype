@@ -1,9 +1,7 @@
 {
-  "xgboost": {
-    "F1": 0.802,
-    "MCC": 0.738,
-    "RMSE": 0.276,
-    "Brier": 0.076,
-    "NSE": 0.582
-  }
+  "logistic_regression": { "F1": 0.793, "MCC": 0.732, "RMSE": 0.304, "Brier": 0.092, "NSE": 0.492 },
+  "random_forest":       { "F1": 0.799, "MCC": 0.734, "RMSE": 0.264, "Brier": 0.070, "NSE": 0.618 },
+  "xgboost":             { "F1": 0.802, "MCC": 0.738, "RMSE": 0.276, "Brier": 0.076, "NSE": 0.582 },
+  "_baseline":           { "name": "Persistence baseline", "F1": 0.796, "MCC": 0.732 },
+  "_note": "Chronological split (common.py). Honest evaluation."
 }
