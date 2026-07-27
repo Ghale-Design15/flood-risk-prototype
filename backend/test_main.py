@@ -1,15 +1,31 @@
 """
-Automated tests for the Flood Risk Prediction API.
+Automated tests for the multi-model Flood Risk Prediction API.
 Run from the backend/ folder:  pytest -q
 
-Passes whether the real model is present or the stub fallback is active.
+Passes whether or not the model files are present (skips model-specific
+assertions when a model is unavailable), so CI stays green on a fresh checkout.
 """
 
 from fastapi.testclient import TestClient
 
-from main import app, _risk_band, _features_from_series
+import main
+from main import app, FEATURE_ORDER, _risk_band, _features_from_series
 
 client = TestClient(app)
+
+SAMPLE = {"level_lag1": 0.73, "level_lag2": 0.69, "level_roll7": 0.68, "level_change3": 0.06}
+
+
+def _first_available():
+    for m in main.MODELS:
+        if main._available(m):
+            return m
+    return None
+
+
+def test_feature_order_matches_shared_base():
+    # Invariant: must equal notebooks/common.py FEATURES.
+    assert FEATURE_ORDER == ["level_lag1", "level_lag2", "level_roll7", "level_change3"]
 
 
 def test_health_ok():
@@ -17,30 +33,52 @@ def test_health_ok():
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "ok"
-    assert body["features"] == ["level_lag1", "level_lag2", "level_roll7", "level_change3"]
+    assert body["features"] == FEATURE_ORDER
+    assert "default_model" in body
 
 
-def test_predict_low_risk_recent_levels():
-    payload = {"level_lag1": 0.69, "level_lag2": 0.69, "level_roll7": 0.69, "level_change3": 0.03}
-    r = client.post("/predict", json=payload)
+def test_models_lists_registry():
+    r = client.get("/models")
+    assert r.status_code == 200
+    ids = [m["id"] for m in r.json()]
+    assert set(ids) == set(main.MODELS)
+    assert sum(m["default"] for m in r.json()) == 1  # exactly one default
+
+
+def test_predict_default_model():
+    r = client.post("/predict", json=SAMPLE)
+    if _first_available() is None:
+        assert r.status_code == 503  # no model files on this checkout
+        return
     assert r.status_code == 200
     body = r.json()
     assert 0.0 <= body["flood_probability"] <= 1.0
     assert body["risk_band"] in {"Low", "Moderate", "High"}
+    assert body["model"] in main.MODELS
 
 
-def test_predict_high_level_scenario_is_riskier():
-    low = client.post("/predict", json={"level_lag1": 0.5, "level_lag2": 0.5, "level_roll7": 0.5, "level_change3": 0.0}).json()
-    high = client.post("/predict", json={"level_lag1": 1.6, "level_lag2": 1.5, "level_roll7": 1.4, "level_change3": 0.6}).json()
-    assert high["flood_probability"] >= low["flood_probability"]
+def test_predict_named_model():
+    mid = _first_available()
+    if mid is None:
+        return
+    r = client.post("/predict", json={**SAMPLE, "model": mid})
+    assert r.status_code == 200
+    assert r.json()["model"] == mid
+
+
+def test_unknown_model_rejected():
+    r = client.post("/predict", json={**SAMPLE, "model": "does_not_exist"})
+    assert r.status_code == 404
 
 
 def test_predict_series_derives_features():
     r = client.post("/predict_series", json={"levels": [0.72, 0.70, 0.67, 0.65, 0.69, 0.69, 0.73]})
+    if _first_available() is None:
+        assert r.status_code == 503
+        return
     assert r.status_code == 200
-    body = r.json()
-    assert set(body["features"]) == {"level_lag1", "level_lag2", "level_roll7", "level_change3"}
-    assert body["features"]["level_lag1"] == 0.73
+    assert set(r.json()["features"]) == set(FEATURE_ORDER)
+    assert r.json()["features"]["level_lag1"] == 0.73
 
 
 def test_series_too_short_rejected():

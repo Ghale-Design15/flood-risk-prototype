@@ -37,16 +37,20 @@ def _repo_root():
     raise FileNotFoundError("Can't find the data/ folder. Run this from inside the repo.")
 
 
-def load_data(csv_path=None):
-    """Murray Bridge daily river level, read from data/ in this repo.
+# Station -> data file in data/. Add a line when a new gauge's CSV lands.
+STATIONS = {
+    "murray_bridge": "murray_bridge_river_level_historical.csv",
+    "morgan": "morgan_river_level.csv",
+    "mannum": "Mannum.csv",
+}
 
-    Keep it reading from the local folder. Pointing a notebook at a raw
-    GitHub URL from another repo is what made the first Logistic Regression
-    notebook impossible for anyone else to run.
-    """
-    if csv_path is None:
-        csv_path = _repo_root() / "data" / "murray_bridge_river_level_historical.csv"
 
+def _first_line(path):
+    with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+        return fh.readline()
+
+
+def _load_murray_bridge(csv_path):
     df = pd.read_csv(csv_path, skiprows=4,
                      names=["datetime", "water_level_m", "conductivity", "water_temp_c"])
     df["datetime"] = pd.to_datetime(df["datetime"], format="%H:%M:%S %d/%m/%Y",
@@ -54,6 +58,45 @@ def load_data(csv_path=None):
     return (df.dropna(subset=["datetime", "water_level_m"])
               .sort_values("datetime")
               .reset_index(drop=True))
+
+
+def _load_water_data_sa(csv_path):
+    """Water Data SA 'Bulk Export': 5 header rows, then Timestamp, Value (m), Grade.
+
+    Collapsed to one reading per calendar day so the day-over-day lags in
+    build_features stay meaningful (some exports carry sub-daily rows).
+    """
+    df = pd.read_csv(csv_path, skiprows=5, usecols=[0, 1],
+                     names=["datetime", "water_level_m"])
+    df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce")
+    df["water_level_m"] = pd.to_numeric(df["water_level_m"], errors="coerce")
+    df = df.dropna(subset=["datetime", "water_level_m"]).sort_values("datetime")
+    df["datetime"] = df["datetime"].dt.normalize()
+    return (df.groupby("datetime", as_index=False)["water_level_m"].last()
+              .reset_index(drop=True))
+
+
+def load_data(csv_path=None, station="murray_bridge"):
+    """Load a daily river-level series as datetime + water_level_m.
+
+    Reads two formats automatically: the Murray Bridge export (default) and the
+    Water Data SA 'Bulk Export' files (Morgan, Mannum). Backwards compatible --
+    load_data() with no arguments still returns Murray Bridge exactly as before.
+
+        common.load_data()                  # Murray Bridge
+        common.load_data(station="morgan")  # another gauge in data/
+        common.load_data(csv_path=...)      # any file, format auto-detected
+
+    Keep reading from the local data/ folder, never a raw GitHub URL from
+    another repo -- that is what made the first notebook impossible to re-run.
+    """
+    if csv_path is None:
+        csv_path = _repo_root() / "data" / STATIONS.get(station, station)
+    csv_path = Path(csv_path)
+
+    if _first_line(csv_path).lstrip().startswith("#Bulk Export"):
+        return _load_water_data_sa(csv_path)
+    return _load_murray_bridge(csv_path)
 
 
 def risk_threshold(df):
