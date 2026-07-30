@@ -1,0 +1,67 @@
+{
+  "random_forest": {
+    "kind": "tree",
+    "labels": [
+      "level_lag1",
+      "level_lag2",
+      "level_roll7",
+      "level_change3"
+    ],
+    "importance": [
+      0.2358,
+      0.0465,
+      0.1341,
+      0.0266
+    ]
+  },
+  "xgboost": {
+    "kind": "tree",
+    "labels": [
+      "level_lag1",
+      "level_lag2",
+      "level_roll7",
+      "level_change3"
+    ],
+    "importance": [
+      3.1764,
+      0.5293,
+      1.3933,
+      0.3472
+    ]
+  },
+  "lstm": {
+    "kind": "sequence",
+    "labels": [
+      "day -14",
+      "day -13",
+      "day -12",
+      "day -11",
+      "day -10",
+      "day -9",
+      "day -8",
+      "day -7",
+      "day -6",
+      "day -5",
+      "day -4",
+      "day -3",
+      "day -2",
+      "day -1"
+    ],
+    "importance": [
+      0.0099,
+      0.0106,
+      0.0113,
+      0.0112,
+      0.011,
+      0.0114,
+      0.0121,
+      0.014,
+      0.0185,
+      0.0261,
+      0.0362,
+      0.0475,
+      0.0534,
+      0.0517
+    ]
+  }
+}
