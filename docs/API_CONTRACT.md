@@ -69,13 +69,9 @@ The API derives the four features and returns the same response shape.
    `"xgboost": {"name": "XGBoost", "file": "xgboost.joblib"}`
 4. Add its metrics to `docs/metrics.json`.
 
-## Two things to settle first (coordination)
+## One thing to settle first (coordination)
 
-1. **Move `Random_Forest.joblib` into `backend/models/`.** It currently lives in
-   `notebooks/` (16.5 MB). The API can't serve it until it's in `backend/models/`
-   and committed. Fine for Render's free tier, but confirm the filename matches
-   the registry.
-2. **`docs/metrics.json`** should be written by the evaluation notebook, not
+1. **`docs/metrics.json`** should be written by the evaluation notebook, not
    hand-maintained, so `/models` never drifts from the real numbers. A sample is
    in `metrics.sample.json` — copy it to `docs/metrics.json` for now.
 
