@@ -85,20 +85,14 @@ FALLBACK_INTERCEPT = -20.165
 MODEL_FILES = {
     "Logistic Regression": [
         "backend/models/logistic_regression_real.joblib",
-        "notebooks/logistic_regression_real.joblib",
     ],
     "Random Forest": [
-        "models/random_forest.joblib",
-        "notebooks/Random_Forest.joblib",
+        "backend/models/random_forest.joblib",
     ],
     "XGBoost": [
         "backend/models/xgboost.joblib",
-        "models/xgboost.joblib",
-        "notebooks/xgboost.joblib",
     ],
 }
-
-
 @st.cache_resource
 def load_models():
     """Load every model we can find. Missing files are skipped, not fatal."""
@@ -365,7 +359,7 @@ st.markdown("""
 models = load_models()
 if not models:
     st.error("No trained model found in the repo. Run the notebooks to create "
-             "models/logistic_regression.joblib and/or models/random_forest.joblib.")
+             "backend/models/logistic_regression_real.joblib and/or backend/models/random_forest.joblib.")
     st.stop()
 
 base_levels, baseline = load_history()
