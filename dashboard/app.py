@@ -56,6 +56,7 @@ BAND_META = {
 }
 
 MODELLED = {"name": "Murray Bridge", "id": "A4261162", "lat": -35.12, "lon": 139.27}
+OPERATOR = "Authorized Person"
 CONTEXT_STATIONS = [
     {"name": "Renmark", "lat": -34.1746, "lon": 140.7461},
     {"name": "Berri", "lat": -34.2833, "lon": 140.60},
@@ -110,6 +111,29 @@ def load_models():
                 except Exception:
                     pass
     return models
+
+
+SHAP_ID = {"Random Forest": "random_forest", "XGBoost": "xgboost", "LSTM": "lstm"}
+
+
+@st.cache_data
+def load_shap_importance(model_name):
+    """Precomputed SHAP importance (shap/<id>.npy) as {feature: value}, or None.
+
+    Ghale precomputes these with TreeExplainer / GradientExplainer in
+    notebooks/precompute_shap.py so the dashboard shows SHAP without recomputing
+    it on every reload.
+    """
+    sid = SHAP_ID.get(model_name)
+    if not sid:
+        return None
+    p = Path(__file__).resolve().parent.parent / "shap" / f"{sid}.npy"
+    if not p.exists():
+        return None
+    vals = np.load(p)
+    if len(vals) == len(FEATURES):
+        return dict(zip(FEATURES, [float(v) for v in vals]))
+    return None
 
 
 @st.cache_data
@@ -262,6 +286,23 @@ def predict(api_url, levels, model):
     return p, band_of(p), feats, "local model"
 
 
+def dispatch_alert(api_url, payload):
+    """POST an authorised alert to the backend /alerts endpoint (SendGrid email + audit log).
+
+    Returns (ok, detail). The /alerts endpoint is built by the backend teammate; until it
+    exists (or when no API URL is set) this returns (False, reason) and the UI falls back to
+    a local confirmation so the demo still works.
+    """
+    if not api_url:
+        return False, "no API URL set"
+    try:
+        r = requests.post(api_url.rstrip("/") + "/alerts", json=payload, timeout=30)
+        r.raise_for_status()
+        return True, r.json()
+    except Exception as exc:
+        return False, str(exc)
+
+
 def apply_scenario(base_levels, scenario, offset):
     s = list(base_levels)
     n = len(s)
@@ -406,7 +447,7 @@ with h2:
         f"<div style='text-align:right;margin-top:6px'>"
         f"<span class='badge' style='background:#e6f5ec;color:#0c6b39'>● Live</span> "
         f"<span class='badge' style='background:#f2f5f9;color:#4a5b70'>{datetime.now().strftime('%H:%M')}</span> "
-        f"<span class='badge' style='background:#eaf3ff;color:#0c447c'>Operator: J. Sanchez</span></div>",
+        f"<span class='badge' style='background:#eaf3ff;color:#0c447c'>Operator: {OPERATOR}</span></div>",
         unsafe_allow_html=True)
 
 horizon = st.radio("Forecast horizon", ["24h", "48h", "72h"], index=1,
@@ -528,12 +569,18 @@ with right:
             zero = alt.Chart(pd.DataFrame({"x": [0]})).mark_rule(color="#c3ccd8").encode(x="x:Q")
             st.altair_chart(zero + bars, use_container_width=True)
         elif hasattr(estimator, "feature_importances_"):
-            st.markdown("<div class='card-title'>Why this score</div>"
-                        "<div class='muted'>feature importance (Random Forest, magnitude only, not signed)</div>",
-                        unsafe_allow_html=True)
+            shap_imp = load_shap_importance(model_choice)
+            if shap_imp is not None:
+                sub = "SHAP feature importance (precomputed · mean |impact|)"
+                imp_by_feat = shap_imp
+            else:
+                sub = "feature importance (magnitude only, not signed)"
+                imp_by_feat = {f: float(estimator.feature_importances_[i]) for i, f in enumerate(FEATURES)}
+            st.markdown(f"<div class='card-title'>Why this score</div>"
+                        f"<div class='muted'>{sub}</div>", unsafe_allow_html=True)
             importances = pd.DataFrame([{"feature": FEATURE_LABEL[f],
-                                         "importance": round(float(estimator.feature_importances_[i]), 3)}
-                                        for i, f in enumerate(FEATURES)])
+                                         "importance": round(imp_by_feat[f], 3)}
+                                        for f in FEATURES])
             bars = alt.Chart(importances).mark_bar(color="#1f6feb").encode(
                 x=alt.X("importance:Q", title=None),
                 y=alt.Y("feature:N", sort="-x", title=None),
@@ -556,16 +603,27 @@ with right:
                         "<div class='muted' style='margin-top:8px'>Audit log #A-2291 · tamper-evident · "
                         "retained per State Records Act 1997 (SA)</div>", unsafe_allow_html=True)
         elif state == "sent":
-            st.markdown(f"<div class='row' style='background:#e6f5ec;color:#0c6b39;padding:6px 9px;"
-                        f"border-radius:7px'>✓ Alert dispatched · {datetime.now().strftime('%H:%M')} "
-                        f"· authorised by J. Sanchez</div>"
-                        "<div class='row'><span class='muted'>Delivered</span>"
-                        "<span>2 recipients · email</span></div>", unsafe_allow_html=True)
+            res = st.session_state.get("alert_result", {"ok": False, "detail": "local"})
+            if res["ok"]:
+                d = res["detail"] if isinstance(res["detail"], dict) else {}
+                aid = d.get("alert_id", d.get("id", "A-2292"))
+                recips = d.get("recipients", d.get("delivered", "Murray Bridge SES · Rural City Council"))
+                st.markdown(f"<div class='row' style='background:#e6f5ec;color:#0c6b39;padding:6px 9px;"
+                            f"border-radius:7px'>✓ Alert sent via backend · {datetime.now().strftime('%H:%M')} "
+                            f"· authorised by {OPERATOR}</div>"
+                            f"<div class='row'><span class='muted'>Delivered</span><span>{recips}</span></div>",
+                            unsafe_allow_html=True)
+                st.markdown(f"<div class='muted'>Audit log #{aid} · signed by {OPERATOR} · "
+                            "retained per State Records Act 1997 (SA)</div>", unsafe_allow_html=True)
+            else:
+                st.markdown(f"<div class='row' style='background:#fdf2df;color:#8a5a0b;padding:6px 9px;"
+                            f"border-radius:7px'>⚠ Authorised locally · backend /alerts not connected</div>"
+                            f"<div class='muted' style='margin-top:6px'>Reason: {res['detail']}. The button POSTs "
+                            "to /alerts and will send real emails once that endpoint is live.</div>",
+                            unsafe_allow_html=True)
             if st.button("Reset", use_container_width=True):
                 st.session_state.alert_state = "pending"
                 st.rerun()
-            st.markdown("<div class='muted'>Audit log #A-2292 · signed by J. Sanchez · "
-                        "retained per State Records Act 1997 (SA)</div>", unsafe_allow_html=True)
         elif state == "confirm":
             st.markdown(f"<div class='row' style='background:#fbe9e9;color:#a12b2b;padding:6px 9px;"
                         f"border-radius:7px'>Confirm dispatch of a {band} flood alert?</div>"
@@ -573,6 +631,17 @@ with right:
                         "<span>Murray Bridge SES · Rural City Council</span></div>", unsafe_allow_html=True)
             c1, c2 = st.columns([2, 1])
             if c1.button("Confirm dispatch", type="primary", use_container_width=True):
+                payload = {
+                    "station_id": MODELLED["id"],
+                    "station_name": MODELLED["name"],
+                    "risk_band": band,
+                    "flood_probability": round(prob, 4),
+                    "horizon": horizon,
+                    "operator": OPERATOR,
+                    "message": f"{band} flood risk ({prob*100:.0f}%) for {MODELLED['name']} over the next {horizon}.",
+                }
+                ok, detail = dispatch_alert(api_url, payload)
+                st.session_state.alert_result = {"ok": ok, "detail": detail}
                 st.session_state.alert_state = "sent"
                 st.rerun()
             if c2.button("Cancel", use_container_width=True):
