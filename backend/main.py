@@ -223,6 +223,26 @@ class ModelInfo(BaseModel):
     metrics: Optional[dict] = None
 
 
+class AlertRequest(BaseModel):
+    """Authorised alert from the dashboard's two-step confirm (human-in-the-loop)."""
+    risk_band: Literal["Low", "Moderate", "High"]
+    operator: str = Field(..., min_length=1, description="Operator ID who authorised the alert.")
+    station_id: Optional[str] = None
+    station_name: Optional[str] = None
+    flood_probability: Optional[float] = Field(None, ge=0.0, le=1.0)
+    horizon: Optional[str] = None
+    message: Optional[str] = None
+
+
+class AlertResponse(BaseModel):
+    alert_id: str
+    created_at: str
+    prev_hash: str
+    row_hash: str
+    chained: bool
+    email_status: str
+
+
 # ---- App ------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -288,6 +308,39 @@ def predict_series(req: SeriesRequest) -> PredictionResponse:
     return PredictionResponse(model=model_id, flood_probability=round(p, 4),
                               risk_band=_risk_band(p),
                               features={k: round(v, 4) for k, v in feats.model_dump().items()})
+
+
+@app.post("/alerts", response_model=AlertResponse)
+def post_alert(req: AlertRequest) -> AlertResponse:
+    """Record an authorised flood alert as a link in the tamper-evident audit
+    chain, then email it (SendGrid) when configured. Returns the alert id and
+    the chain hashes. Requires the Supabase audit store to be configured."""
+    import alerts
+
+    if not alerts.store_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Audit store not configured. Set SUPABASE_URL and SUPABASE_SERVICE_KEY.",
+        )
+    try:
+        result = alerts.record_alert(req.model_dump())
+    except Exception as exc:  # surface a clean 502 rather than a stack trace
+        raise HTTPException(status_code=502, detail=f"Failed to record alert: {exc}")
+    return AlertResponse(**result)
+
+
+@app.get("/alerts/verify")
+def verify_alerts() -> dict:
+    """Recompute the whole audit chain and report whether it is intact."""
+    import alerts
+
+    if not alerts.store_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Audit store not configured. Set SUPABASE_URL and SUPABASE_SERVICE_KEY.",
+        )
+    rows = alerts.fetch_chain()
+    return alerts.verify_chain(rows)
 
 
 if __name__ == "__main__":

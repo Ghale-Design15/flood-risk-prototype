@@ -61,6 +61,52 @@ The API derives the four features and returns the same response shape.
 - Fewer than 4 levels on `/predict_series` → `422`.
 - The response always echoes which `model` actually served the call.
 
+### `POST /predict_series` with the LSTM
+
+The LSTM is a **sequence** model: it scores the last 14 daily levels, so it is
+only served on `/predict_series` (not `/predict`). Send at least 14 levels:
+```json
+{ "levels": [ ... 14+ recent daily levels ... ], "model": "lstm" }
+```
+Fewer than the window (14) → `422`. Calling `/predict` with `model: "lstm"` → `422`
+(needs a series, not the four flat features).
+
+### `POST /alerts`
+Records an authorised flood alert in a **tamper-evident hash-chained** audit log
+(Supabase) and emails it via SendGrid when configured. Human-in-the-loop: the
+dashboard only calls this after a two-step confirm.
+
+Body (from the dashboard's alert card):
+```json
+{ "risk_band": "High", "operator": "op-7",
+  "station_id": "A4261162", "station_name": "Murray Bridge",
+  "flood_probability": 0.81, "horizon": "48h",
+  "message": "High flood risk (81%) for Murray Bridge over the next 48h." }
+```
+Response:
+```json
+{ "alert_id": "A-3F9A2B10", "created_at": "2026-07-31T09:12:04+00:00",
+  "prev_hash": "…", "row_hash": "…", "chained": true,
+  "email_status": "sent (202)" }
+```
+Each row stores `prev_hash` (previous row's hash) and `row_hash`
+(`sha256` of the row's canonical fields, `prev_hash` included). The table is
+append-only at the DB level. `email_status` is `"skipped (…)"` when no SendGrid
+key is set — the alert is still logged.
+
+### `GET /alerts/verify`
+Recomputes the whole chain and reports integrity:
+```json
+{ "ok": true, "checked": 42, "broken_at": null }
+```
+If a row was altered or removed, `ok` is `false` and `broken_at` is the index of
+the first broken link.
+
+**Setup:** run `db/supabase_audit.sql` in Supabase once, then set `SUPABASE_URL`,
+`SUPABASE_SERVICE_KEY` (and optionally `SENDGRID_API_KEY`, `ALERT_EMAIL_FROM`,
+`ALERT_EMAIL_TO`) — see `backend/.env.example`. Without the Supabase vars,
+`/alerts` and `/alerts/verify` return `503`.
+
 ## Adding a model (one place)
 
 1. Train it through `common.py` so it uses the same features.

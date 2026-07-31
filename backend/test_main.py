@@ -97,3 +97,62 @@ def test_risk_band_thresholds():
     assert _risk_band(0.10) == "Low"
     assert _risk_band(0.50) == "Moderate"
     assert _risk_band(0.90) == "High"
+
+
+# ---- Alert audit chain ----------------------------------------------------
+import alerts
+
+ALERT = {"station_id": "A4261", "station_name": "Murray Bridge", "risk_band": "High",
+         "flood_probability": 0.81, "horizon": "48h", "operator": "op-7", "message": "High risk"}
+
+
+def _chain(payloads):
+    rows, prev = [], alerts.GENESIS_HASH
+    for i, p in enumerate(payloads):
+        r = alerts.build_record(p, prev, alert_id=f"A-{i:04d}", created_at=f"2026-07-31T0{i}:00:00+00:00")
+        rows.append(r)
+        prev = r["row_hash"]
+    return rows
+
+
+def test_chain_hash_is_deterministic():
+    rows = _chain([ALERT])
+    assert alerts.compute_hash(rows[0]) == rows[0]["row_hash"]
+
+
+def test_intact_chain_verifies():
+    rows = _chain([ALERT, {**ALERT, "risk_band": "Low"}, {**ALERT, "risk_band": "Moderate"}])
+    assert alerts.verify_chain(rows)["ok"] is True
+
+
+def test_tampered_value_is_detected():
+    rows = _chain([ALERT, {**ALERT, "risk_band": "Low"}])
+    rows[0]["flood_probability"] = 0.99  # edit a stored field without fixing the hash
+    result = alerts.verify_chain(rows)
+    assert result["ok"] is False and result["broken_at"] == 0
+
+
+def test_removed_link_is_detected():
+    rows = _chain([ALERT, {**ALERT, "risk_band": "Low"}, {**ALERT, "risk_band": "Moderate"}])
+    del rows[1]  # break the prev_hash linkage
+    assert alerts.verify_chain(rows)["ok"] is False
+
+
+def test_float_normalisation_is_stable():
+    a = alerts.build_record(ALERT, alerts.GENESIS_HASH, alert_id="A-0000", created_at="2026-07-31T00:00:00+00:00")
+    b = alerts.build_record({**ALERT, "flood_probability": 0.8100000001}, alerts.GENESIS_HASH,
+                            alert_id="A-0000", created_at="2026-07-31T00:00:00+00:00")
+    assert a["row_hash"] == b["row_hash"]
+
+
+def test_alerts_endpoint_503_when_store_unconfigured(monkeypatch):
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_SERVICE_KEY", raising=False)
+    alerts._client_ready = False  # reset the lazy client cache
+    r = client.post("/alerts", json=ALERT)
+    assert r.status_code == 503
+
+
+def test_alerts_endpoint_validates_payload():
+    r = client.post("/alerts", json={"flood_probability": 0.5})  # missing risk_band + operator
+    assert r.status_code == 422
