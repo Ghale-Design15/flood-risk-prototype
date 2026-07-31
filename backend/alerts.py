@@ -114,7 +114,9 @@ def _supabase():
 
 
 def store_configured() -> bool:
-    return _supabase() is not None
+    """True if the Supabase env vars are set. Only checks env — never imports the
+    client or raises — so callers can gate on it without risking a 500."""
+    return bool(os.getenv("SUPABASE_URL") and os.getenv("SUPABASE_SERVICE_KEY"))
 
 
 def _last_hash(client) -> str:

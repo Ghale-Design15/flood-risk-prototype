@@ -339,7 +339,10 @@ def verify_alerts() -> dict:
             status_code=503,
             detail="Audit store not configured. Set SUPABASE_URL and SUPABASE_SERVICE_KEY.",
         )
-    rows = alerts.fetch_chain()
+    try:
+        rows = alerts.fetch_chain()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to read audit chain: {exc}")
     return alerts.verify_chain(rows)
 
 
