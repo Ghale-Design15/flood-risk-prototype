@@ -24,6 +24,7 @@ Honesty notes:
   Logistic Regression, feature importance for the Random Forest.
 """
 
+import json
 import math
 import os
 from datetime import datetime
@@ -475,6 +476,36 @@ with left:
             "&nbsp;<b>◯</b> monitored "
             "<span style='color:#9aa6bd'>●</span> no data</div>", unsafe_allow_html=True)
         fmap = folium.Map(location=[-34.6, 139.9], zoom_start=7, tiles="CartoDB positron")
+
+        # South Australia ward boundaries, coloured by the current flood-risk band.
+        # The GeoJSON may live in a couple of places depending on who added it; use the
+        # first non-empty candidate and fail quietly if the data isn't present yet, so
+        # the rest of the map keeps working while the file is being sorted out.
+        ward_candidates = [
+            Path(__file__).resolve().parent / "Wards_GDA94.geojson",
+            Path(__file__).resolve().parent / "data" / "Wards_GDA94.geojson",
+            Path(__file__).resolve().parent.parent / "data" / "Wards_GDA94.geojson",
+        ]
+        ward_path = next((p for p in ward_candidates if p.exists() and p.stat().st_size > 0), None)
+        if ward_path:
+            try:
+                with open(ward_path, "r", encoding="utf-8") as fh:
+                    ward_geo = json.load(fh)
+                if ward_geo.get("features"):
+                    polygon_colour = BAND_COLOR[band]
+                    folium.GeoJson(
+                        ward_geo,
+                        name="Ward boundaries",
+                        style_function=lambda feature: {
+                            "fillColor": polygon_colour,
+                            "color": polygon_colour,
+                            "weight": 2,
+                            "fillOpacity": 0.25,
+                        },
+                    ).add_to(fmap)
+            except (json.JSONDecodeError, OSError):
+                pass  # data missing or malformed — skip the layer, keep the map working
+
         for s in CONTEXT_STATIONS:
             folium.CircleMarker([s["lat"], s["lon"]], radius=6, color="#9aa6bd", fill=True,
                                 fill_color="#9aa6bd", fill_opacity=0.8,
