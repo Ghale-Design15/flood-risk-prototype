@@ -477,31 +477,31 @@ with left:
             "<span style='color:#9aa6bd'>●</span> no data</div>", unsafe_allow_html=True)
         fmap = folium.Map(location=[-34.6, 139.9], zoom_start=7, tiles="CartoDB positron")
 
-        # South Australia ward boundaries, coloured by the current flood-risk band.
-        # The GeoJSON may live in a couple of places depending on who added it; use the
-        # first non-empty candidate and fail quietly if the data isn't present yet, so
-        # the rest of the map keeps working while the file is being sorted out.
-        ward_candidates = [
-            Path(__file__).resolve().parent / "Wards_GDA94.geojson",
-            Path(__file__).resolve().parent / "data" / "Wards_GDA94.geojson",
-            Path(__file__).resolve().parent.parent / "data" / "Wards_GDA94.geojson",
+        # South Australia LGA boundaries, coloured by the current flood-risk band.
+        # Look in a few likely spots (repo data/ first, where the simplified file lives)
+        # and fail quietly if it isn't present, so the rest of the map keeps working.
+        boundary_candidates = [
+            Path(__file__).resolve().parent.parent / "data" / "lga_boundaries.geojson",
+            Path(__file__).resolve().parent / "data" / "lga_boundaries.geojson",
+            Path(__file__).resolve().parent / "lga_boundaries.geojson",
         ]
-        ward_path = next((p for p in ward_candidates if p.exists() and p.stat().st_size > 0), None)
-        if ward_path:
+        boundary_path = next((p for p in boundary_candidates if p.exists() and p.stat().st_size > 0), None)
+        if boundary_path:
             try:
-                with open(ward_path, "r", encoding="utf-8") as fh:
-                    ward_geo = json.load(fh)
-                if ward_geo.get("features"):
+                with open(boundary_path, "r", encoding="utf-8") as fh:
+                    boundary_geo = json.load(fh)
+                if boundary_geo.get("features"):
                     polygon_colour = BAND_COLOR[band]
                     folium.GeoJson(
-                        ward_geo,
-                        name="Ward boundaries",
+                        boundary_geo,
+                        name="LGA boundaries",
                         style_function=lambda feature: {
                             "fillColor": polygon_colour,
                             "color": polygon_colour,
                             "weight": 2,
                             "fillOpacity": 0.25,
                         },
+                        tooltip=folium.GeoJsonTooltip(fields=["name"], aliases=["LGA:"]),
                     ).add_to(fmap)
             except (json.JSONDecodeError, OSError):
                 pass  # data missing or malformed — skip the layer, keep the map working
