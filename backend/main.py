@@ -3,9 +3,12 @@ Flood Risk Prediction API — multi-model
 =======================================
 FastAPI service for the flood-risk prototype (River Murray catchment).
 
-Serves any of the team's trained models through one contract. Every model is
-trained on the shared base in notebooks/common.py, so they all take the same
-four river-level features and expose predict_proba:
+Serves any of the team's trained models through one contract. Two kinds:
+
+  * tabular models (Logistic Regression, Random Forest, XGBoost) score the four
+    river-level features below via predict_proba, on /predict or /predict_series.
+  * the sequence model (LSTM) scores a window of recent daily levels and is only
+    available on /predict_series (it needs the raw series, not the flat features).
 
     level_lag1     water level 1 day ago (m)
     level_lag2     water level 2 days ago (m)
@@ -24,6 +27,7 @@ backend/models/ and, if you have them, its metrics into docs/metrics.json.
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 from contextlib import asynccontextmanager
@@ -36,9 +40,11 @@ from pydantic import BaseModel, Field
 
 try:
     import joblib
+    import numpy as np
     import pandas as pd
 except Exception:  # pragma: no cover
     joblib = None
+    np = None
     pd = None
 
 # Feature order MUST match notebooks/common.py FEATURES. A test asserts this.
@@ -53,10 +59,14 @@ METRICS_PATH = BASE_DIR.parent / "docs" / "metrics.json"
 
 # ---- Model registry -------------------------------------------------------
 # Add a model here, drop its file in backend/models/, done.
+#   kind "tabular"  -> sklearn-style estimator with predict_proba on the 4 features
+#   kind "sequence" -> Keras model scored on a window of recent daily levels; needs
+#                      an "aux" bundle (joblib dict with scaler, window, threshold)
 MODELS: Dict[str, Dict[str, str]] = {
-    "logistic_regression": {"name": "Logistic Regression", "file": "logistic_regression_real.joblib"},
-    "random_forest": {"name": "Random Forest", "file": "random_forest.joblib"},
-    "xgboost": {"name": "XGBoost", "file": "xgboost.joblib"},
+    "logistic_regression": {"name": "Logistic Regression", "file": "logistic_regression_real.joblib", "kind": "tabular"},
+    "random_forest": {"name": "Random Forest", "file": "random_forest.joblib", "kind": "tabular"},
+    "xgboost": {"name": "XGBoost", "file": "xgboost.joblib", "kind": "tabular"},
+    "lstm": {"name": "LSTM", "file": "lstm.keras", "kind": "sequence", "aux": "lstm_scaler.joblib"},
 }
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "random_forest")
 
@@ -68,8 +78,32 @@ def _model_path(model_id: str) -> Path:
     return MODEL_DIR / MODELS[model_id]["file"]
 
 
+def _kind(model_id: str) -> str:
+    return MODELS[model_id].get("kind", "tabular")
+
+
+def _keras_available() -> bool:
+    """True if TensorFlow/Keras is installed. Uses find_spec so we don't pay the
+    (heavy) import cost just to answer /models or /health."""
+    return importlib.util.find_spec("tensorflow") is not None
+
+
 def _available(model_id: str) -> bool:
-    return joblib is not None and _model_path(model_id).exists()
+    meta = MODELS[model_id]
+    if joblib is None or not _model_path(model_id).exists():
+        return False
+    if meta.get("kind") == "sequence":
+        # Needs Keras at runtime plus its companion scaler/window bundle.
+        return _keras_available() and (MODEL_DIR / meta["aux"]).exists()
+    return True
+
+
+def _sequence_window(model_id: str) -> int:
+    """Read just the window length from the aux bundle (cheap) for error messages."""
+    try:
+        return int(joblib.load(MODEL_DIR / MODELS[model_id]["aux"])["window"])
+    except Exception:
+        return 14
 
 
 def _resolve(model_id: Optional[str]) -> str:
@@ -92,7 +126,15 @@ def _resolve(model_id: Optional[str]) -> str:
 
 def _get_model(model_id: str):
     if model_id not in _loaded:
-        _loaded[model_id] = joblib.load(_model_path(model_id))
+        meta = MODELS[model_id]
+        if meta.get("kind") == "sequence":
+            # Keras is imported lazily so the tabular models work even if TF is absent.
+            from tensorflow.keras.models import load_model  # noqa: WPS433
+            bundle = joblib.load(MODEL_DIR / meta["aux"])   # {scaler, window, threshold}
+            bundle["model"] = load_model(_model_path(model_id))
+            _loaded[model_id] = bundle
+        else:
+            _loaded[model_id] = joblib.load(_model_path(model_id))
     return _loaded[model_id]
 
 
@@ -108,6 +150,21 @@ def _probability(model_id: str, feats: "FloodFeatures") -> float:
     model = _get_model(model_id)
     row = pd.DataFrame([[getattr(feats, f) for f in FEATURE_ORDER]], columns=FEATURE_ORDER)
     return float(model.predict_proba(row)[0][1])
+
+
+def _probability_sequence(model_id: str, levels: List[float]) -> float:
+    """Score a Keras sequence model on the most recent `window` daily levels,
+    scaled with the model's saved StandardScaler (see FloodRiskPrediction_LSTM)."""
+    bundle = _get_model(model_id)
+    model, scaler, window = bundle["model"], bundle["scaler"], int(bundle["window"])
+    if len(levels) < window:
+        raise HTTPException(
+            status_code=422,
+            detail=f"The '{model_id}' model needs at least {window} recent daily levels; received {len(levels)}.",
+        )
+    seq = np.asarray(levels[-window:], dtype="float32").reshape(-1, 1)
+    seq = scaler.transform(seq).reshape(1, window, 1)
+    return float(model.predict(seq, verbose=0).ravel()[0])
 
 
 def _risk_band(p: float) -> Literal["Low", "Moderate", "High"]:
@@ -205,6 +262,12 @@ def models() -> List[ModelInfo]:
 @app.post("/predict", response_model=PredictionResponse)
 def predict(req: PredictRequest) -> PredictionResponse:
     model_id = _resolve(req.model)
+    if _kind(model_id) == "sequence":
+        raise HTTPException(
+            status_code=422,
+            detail=(f"Model '{model_id}' scores a time series, not flat features. "
+                    f"Use /predict_series with at least {_sequence_window(model_id)} recent daily levels."),
+        )
     feats = FloodFeatures(**{f: getattr(req, f) for f in FEATURE_ORDER})
     p = _probability(model_id, feats)
     return PredictionResponse(model=model_id, flood_probability=round(p, 4),
@@ -214,6 +277,12 @@ def predict(req: PredictRequest) -> PredictionResponse:
 @app.post("/predict_series", response_model=PredictionResponse)
 def predict_series(req: SeriesRequest) -> PredictionResponse:
     model_id = _resolve(req.model)
+    if _kind(model_id) == "sequence":
+        p = _probability_sequence(model_id, req.levels)
+        window = _sequence_window(model_id)
+        return PredictionResponse(model=model_id, flood_probability=round(p, 4),
+                                  risk_band=_risk_band(p),
+                                  features={"window": window, "levels_used": len(req.levels)})
     feats = _features_from_series(req.levels)
     p = _probability(model_id, feats)
     return PredictionResponse(model=model_id, flood_probability=round(p, 4),
