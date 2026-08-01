@@ -27,6 +27,7 @@ Honesty notes:
 import json
 import math
 import os
+import re
 from datetime import datetime
 from pathlib import Path
 
@@ -58,6 +59,21 @@ BAND_META = {
 
 MODELLED = {"name": "Murray Bridge", "id": "A4261162", "lat": -35.12, "lon": 139.27}
 OPERATOR = "Authorized Person"
+
+# Predefined alert recipients (organisations). For the prototype these map to the
+# team's own inboxes as mockups — replace the emails with real team addresses.
+RECIPIENT_DIRECTORY = [
+    {"label": "Murray Bridge SES", "email": "manuela@example.com"},
+    {"label": "Rural City of Murray Bridge (Council)", "email": "julieth@example.com"},
+    {"label": "SA SES — State HQ", "email": "aleja@example.com"},
+    {"label": "Bureau of Meteorology (SA)", "email": "ghale@example.com"},
+]
+DEFAULT_RECIPIENTS = ["Murray Bridge SES", "Rural City of Murray Bridge (Council)"]
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def is_valid_email(addr: str) -> bool:
+    return bool(_EMAIL_RE.match((addr or "").strip()))
 CONTEXT_STATIONS = [
     {"name": "Renmark", "lat": -34.1746, "lon": 140.7461},
     {"name": "Berri", "lat": -34.2833, "lon": 140.60},
@@ -635,14 +651,17 @@ with right:
                         "retained per State Records Act 1997 (SA)</div>", unsafe_allow_html=True)
         elif state == "sent":
             res = st.session_state.get("alert_result", {"ok": False, "detail": "local"})
+            chosen = ", ".join(st.session_state.get("alert_recipient_labels", [])) or "—"
             if res["ok"]:
                 d = res["detail"] if isinstance(res["detail"], dict) else {}
                 aid = d.get("alert_id", d.get("id", "A-2292"))
-                recips = d.get("recipients", d.get("delivered", "Murray Bridge SES · Rural City Council"))
+                email_status = d.get("email_status", "")
                 st.markdown(f"<div class='row' style='background:#e6f5ec;color:#0c6b39;padding:6px 9px;"
                             f"border-radius:7px'>✓ Alert sent via backend · {datetime.now().strftime('%H:%M')} "
                             f"· authorised by {OPERATOR}</div>"
-                            f"<div class='row'><span class='muted'>Delivered</span><span>{recips}</span></div>",
+                            f"<div class='row'><span class='muted'>Delivered</span><span>{chosen}</span></div>"
+                            + (f"<div class='row'><span class='muted'>Email</span><span>{email_status}</span></div>"
+                               if email_status else ""),
                             unsafe_allow_html=True)
                 st.markdown(f"<div class='muted'>Audit log #{aid} · signed by {OPERATOR} · "
                             "retained per State Records Act 1997 (SA)</div>", unsafe_allow_html=True)
@@ -656,10 +675,11 @@ with right:
                 st.session_state.alert_state = "pending"
                 st.rerun()
         elif state == "confirm":
+            to_line = ", ".join(st.session_state.get("alert_recipient_labels", [])) or "—"
             st.markdown(f"<div class='row' style='background:#fbe9e9;color:#a12b2b;padding:6px 9px;"
                         f"border-radius:7px'>Confirm dispatch of a {band} flood alert?</div>"
-                        "<div class='row'><span class='muted'>To</span>"
-                        "<span>Murray Bridge SES · Rural City Council</span></div>", unsafe_allow_html=True)
+                        f"<div class='row'><span class='muted'>To</span><span>{to_line}</span></div>",
+                        unsafe_allow_html=True)
             c1, c2 = st.columns([2, 1])
             if c1.button("Confirm dispatch", type="primary", use_container_width=True):
                 payload = {
@@ -670,6 +690,7 @@ with right:
                     "horizon": horizon,
                     "operator": OPERATOR,
                     "message": f"{band} flood risk ({prob*100:.0f}%) for {MODELLED['name']} over the next {horizon}.",
+                    "recipients": st.session_state.get("alert_recipients", []),
                 }
                 ok, detail = dispatch_alert(api_url, payload)
                 st.session_state.alert_result = {"ok": ok, "detail": detail}
@@ -682,13 +703,32 @@ with right:
                         unsafe_allow_html=True)
         else:  # pending
             st.markdown("<div class='row' style='background:#fdf2df;color:#8a5a0b;padding:6px 9px;"
-                        "border-radius:7px'>⚠ Awaiting human authorisation</div>"
-                        "<div class='row'><span class='muted'>Recipients</span>"
-                        "<span>Murray Bridge SES · Rural City Council</span></div>"
-                        "<div class='row'><span class='muted'>Channel</span>"
+                        "border-radius:7px'>⚠ Awaiting human authorisation</div>", unsafe_allow_html=True)
+            orgs = st.multiselect("Recipient organisations",
+                                  options=[o["label"] for o in RECIPIENT_DIRECTORY],
+                                  default=DEFAULT_RECIPIENTS, key="alert_orgs")
+            custom = st.text_input("Additional email (optional)", key="alert_custom",
+                                   placeholder="professor@university.edu")
+            st.markdown("<div class='row'><span class='muted'>Channel</span>"
                         "<span>Email (SendGrid) · SMS descoped</span></div>", unsafe_allow_html=True)
             if st.button("Authorise & dispatch alert", type="primary", use_container_width=True):
-                st.session_state.alert_state = "confirm"
-                st.rerun()
-            st.markdown("<div class='muted'>Audit log #A-2291 · tamper-evident · "
+                emails, labels = [], []
+                for o in RECIPIENT_DIRECTORY:
+                    if o["label"] in orgs:
+                        emails.append(o["email"])
+                        labels.append(o["label"])
+                extra = (custom or "").strip()
+                if extra and not is_valid_email(extra):
+                    st.error("That additional email doesn't look valid.")
+                elif not emails and not extra:
+                    st.error("Select at least one recipient, or add a custom email.")
+                else:
+                    if extra:
+                        emails.append(extra)
+                        labels.append(extra)
+                    st.session_state.alert_recipients = emails
+                    st.session_state.alert_recipient_labels = labels
+                    st.session_state.alert_state = "confirm"
+                    st.rerun()
+            st.markdown("<div class='muted'>Audit log · tamper-evident · "
                         "retained per State Records Act 1997 (SA)</div>", unsafe_allow_html=True)

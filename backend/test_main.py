@@ -138,6 +138,17 @@ def test_removed_link_is_detected():
     assert alerts.verify_chain(rows)["ok"] is False
 
 
+def test_recipients_are_in_the_chain():
+    with_r = alerts.build_record({**ALERT, "recipients": ["a@x.com", "b@y.com"]},
+                                 alerts.GENESIS_HASH, alert_id="A-0000", created_at="2026-07-31T00:00:00+00:00")
+    without_r = alerts.build_record(ALERT, alerts.GENESIS_HASH,
+                                    alert_id="A-0000", created_at="2026-07-31T00:00:00+00:00")
+    # recipients participate in the hash, so the two differ; both still self-verify.
+    assert with_r["recipients"] == "a@x.com, b@y.com"
+    assert with_r["row_hash"] != without_r["row_hash"]
+    assert alerts.verify_chain([with_r])["ok"] is True
+
+
 def test_float_normalisation_is_stable():
     a = alerts.build_record(ALERT, alerts.GENESIS_HASH, alert_id="A-0000", created_at="2026-07-31T00:00:00+00:00")
     b = alerts.build_record({**ALERT, "flood_probability": 0.8100000001}, alerts.GENESIS_HASH,

@@ -76,16 +76,20 @@ Records an authorised flood alert in a **tamper-evident hash-chained** audit log
 (Supabase) and emails it via SendGrid when configured. Human-in-the-loop: the
 dashboard only calls this after a two-step confirm.
 
-Body (from the dashboard's alert card):
+Body (from the dashboard's alert card). `recipients` is chosen in the dashboard
+(predefined organisations plus an optional custom address); it drives the email
+`To` and is recorded in the audit chain. Omit it to fall back to `ALERT_EMAIL_TO`.
 ```json
 { "risk_band": "High", "operator": "op-7",
   "station_id": "A4261162", "station_name": "Murray Bridge",
   "flood_probability": 0.81, "horizon": "48h",
-  "message": "High flood risk (81%) for Murray Bridge over the next 48h." }
+  "message": "High flood risk (81%) for Murray Bridge over the next 48h.",
+  "recipients": ["ses@example.gov.au", "professor@university.edu"] }
 ```
 Response:
 ```json
 { "alert_id": "A-3F9A2B10", "created_at": "2026-07-31T09:12:04+00:00",
+  "recipients": "ses@example.gov.au, professor@university.edu",
   "prev_hash": "…", "row_hash": "…", "chained": true,
   "email_status": "sent (202)" }
 ```

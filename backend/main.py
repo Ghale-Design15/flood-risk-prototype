@@ -232,11 +232,13 @@ class AlertRequest(BaseModel):
     flood_probability: Optional[float] = Field(None, ge=0.0, le=1.0)
     horizon: Optional[str] = None
     message: Optional[str] = None
+    recipients: Optional[List[str]] = Field(None, description="Email recipients for this alert.")
 
 
 class AlertResponse(BaseModel):
     alert_id: str
     created_at: str
+    recipients: str
     prev_hash: str
     row_hash: str
     chained: bool

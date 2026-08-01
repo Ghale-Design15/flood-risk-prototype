@@ -35,7 +35,7 @@ GENESIS_HASH = "0" * 64
 # over exactly these (prev_hash included), so verification is deterministic.
 CHAIN_FIELDS = [
     "alert_id", "created_at", "station_id", "station_name", "risk_band",
-    "flood_probability", "horizon", "operator", "message", "prev_hash",
+    "flood_probability", "horizon", "operator", "message", "recipients", "prev_hash",
 ]
 
 
@@ -60,6 +60,14 @@ def compute_hash(record: Dict) -> str:
     return hashlib.sha256(canonical(record).encode("utf-8")).hexdigest()
 
 
+def _recipients_str(payload: Dict) -> str:
+    """Normalise recipients (list or string) to a stable comma-separated string."""
+    r = payload.get("recipients")
+    if isinstance(r, (list, tuple)):
+        return ", ".join(str(x).strip() for x in r if str(x).strip())
+    return (r or "").strip()
+
+
 def build_record(payload: Dict, prev_hash: str, *, alert_id: str, created_at: str) -> Dict:
     """Assemble a full chain row (business fields + prev_hash + row_hash)."""
     record = {
@@ -72,6 +80,7 @@ def build_record(payload: Dict, prev_hash: str, *, alert_id: str, created_at: st
         "horizon": payload.get("horizon"),
         "operator": payload.get("operator"),
         "message": payload.get("message"),
+        "recipients": _recipients_str(payload),
         "prev_hash": prev_hash,
     }
     record["row_hash"] = compute_hash(record)
@@ -145,6 +154,7 @@ def record_alert(payload: Dict) -> Dict:
     return {
         "alert_id": record["alert_id"],
         "created_at": record["created_at"],
+        "recipients": record["recipients"],
         "prev_hash": prev_hash,
         "row_hash": record["row_hash"],
         "chained": True,
@@ -163,10 +173,11 @@ def fetch_chain(limit: int = 1000) -> List[Dict]:
 # ---- Email (graceful) -----------------------------------------------------
 def _send_email(record: Dict) -> str:
     key = os.getenv("SENDGRID_API_KEY")
-    to = os.getenv("ALERT_EMAIL_TO")
     frm = os.getenv("ALERT_EMAIL_FROM")
+    # Prefer the recipients chosen in the dashboard; fall back to ALERT_EMAIL_TO.
+    to = record.get("recipients") or os.getenv("ALERT_EMAIL_TO")
     if not (key and to and frm):
-        return "skipped (SENDGRID_API_KEY / ALERT_EMAIL_FROM / ALERT_EMAIL_TO not set)"
+        return "skipped (need SENDGRID_API_KEY, ALERT_EMAIL_FROM, and recipients or ALERT_EMAIL_TO)"
     try:
         from sendgrid import SendGridAPIClient
         from sendgrid.helpers.mail import Mail
