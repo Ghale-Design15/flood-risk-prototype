@@ -298,7 +298,10 @@ def predict(api_url, levels, model, model_id=None):
             body = {"levels": levels, "station_id": MODELLED["id"]}
             if model_id:
                 body["model"] = model_id          # route to the chosen model (incl. LSTM)
-            r = requests.post(api_url.rstrip("/") + "/predict_series", json=body, timeout=30)
+            # LSTM's first call imports TensorFlow + loads the model (slow cold start
+            # on a small instance), so give sequence models a longer read timeout.
+            timeout = 90 if (model_id or "").lower() == "lstm" else 30
+            r = requests.post(api_url.rstrip("/") + "/predict_series", json=body, timeout=timeout)
             r.raise_for_status()
             b = r.json()
             return b["flood_probability"], b["risk_band"], feats, b.get("model", "api")
