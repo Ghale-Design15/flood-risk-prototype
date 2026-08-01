@@ -61,14 +61,14 @@ MODELLED = {"name": "Murray Bridge", "id": "A4261162", "lat": -35.12, "lon": 139
 OPERATOR = "Authorized Person"
 
 # Predefined alert recipients (organisations). For the prototype these map to the
-# team's own inboxes as mockups — replace the emails with real team addresses.
+# team's own inboxes as mockups so alerts actually deliver during testing.
 RECIPIENT_DIRECTORY = [
-    {"label": "Murray Bridge SES", "email": "manuela@example.com"},
-    {"label": "Rural City of Murray Bridge (Council)", "email": "julieth@example.com"},
-    {"label": "SA SES — State HQ", "email": "aleja@example.com"},
-    {"label": "Bureau of Meteorology (SA)", "email": "ghale@example.com"},
+    {"label": "Department for Environment and Water (DEW)", "email": "manur9669@gmail.com"},
+    {"label": "SA Police (SAPOL), Murray Bridge", "email": "julieth.sanjju@gmail.com"},
+    {"label": "Mid Murray Council", "email": "alejandragn2323@gmail.com"},
+    {"label": "SA Bureau of Meteorology", "email": "ghale.phurku@gmail.com"},
 ]
-DEFAULT_RECIPIENTS = ["Murray Bridge SES", "Rural City of Murray Bridge (Council)"]
+DEFAULT_RECIPIENTS = ["Department for Environment and Water (DEW)", "SA Police (SAPOL), Murray Bridge"]
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
