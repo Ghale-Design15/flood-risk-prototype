@@ -211,11 +211,10 @@ def load_monitored():
 
 @st.cache_data(ttl=60, show_spinner=False)
 def fetch_api_models(api_url):
-    """Model names offered by the backend's GET /models. None if unavailable.
-
-    The dropdown is driven by this list when the API is reachable, but the
-    prediction, uncertainty band and explainability card still use the joblib
-    loaded locally, because those need the model object itself.
+    """Models offered by the backend's GET /models as {id, name, available}
+    dicts, or None if unavailable. Availability lets us list API-only models
+    (e.g. the LSTM, which has no local joblib) and route their prediction
+    through the API while still using local objects for models we have.
     """
     if not api_url:
         return None
@@ -225,8 +224,12 @@ def fetch_api_models(api_url):
         data = r.json()
         if isinstance(data, dict):
             data = data.get("models", [])
-        names = [d.get("name", d.get("id")) if isinstance(d, dict) else str(d) for d in data]
-        return [n for n in names if n] or None
+        out = []
+        for d in data:
+            if isinstance(d, dict) and (d.get("name") or d.get("id")):
+                out.append({"id": d.get("id"), "name": d.get("name", d.get("id")),
+                            "available": d.get("available", True)})
+        return out or None
     except Exception:
         return None
 
@@ -288,17 +291,23 @@ def predict_local(model, feats):
     return 1.0 / (1.0 + math.exp(-z))
 
 
-def predict(api_url, levels, model):
+def predict(api_url, levels, model, model_id=None):
     feats = features_from_levels(levels)
     if api_url:
         try:
-            r = requests.post(api_url.rstrip("/") + "/predict_series",
-                              json={"levels": levels, "station_id": MODELLED["id"]}, timeout=30)
+            body = {"levels": levels, "station_id": MODELLED["id"]}
+            if model_id:
+                body["model"] = model_id          # route to the chosen model (incl. LSTM)
+            r = requests.post(api_url.rstrip("/") + "/predict_series", json=body, timeout=30)
             r.raise_for_status()
             b = r.json()
-            return b["flood_probability"], b["risk_band"], feats, b.get("model_source", "api")
+            return b["flood_probability"], b["risk_band"], feats, b.get("model", "api")
         except Exception as exc:
-            st.warning(f"API unreachable, using local model ({exc}).")
+            if model is None:
+                st.warning(f"'{model_id}' is served by the API and it's unreachable ({exc}); "
+                           "showing a rough local estimate instead.")
+            else:
+                st.warning(f"API unreachable, using local model ({exc}).")
     p = predict_local(model, feats)
     return p, band_of(p), feats, "local model"
 
@@ -435,22 +444,35 @@ with st.sidebar:
     # and falls back to whatever joblib files are in the repo. Either way the
     # prediction below uses the locally loaded model object.
     api_models = fetch_api_models(api_url)
-    options = [n for n in (api_models or []) if n in models] or list(models.keys())
+    if api_models:
+        available = [m for m in api_models if m.get("available")]
+        options = [m["name"] for m in available] or list(models.keys())
+        name_to_id = {m["name"]: m.get("id") for m in api_models}
+    else:
+        options = list(models.keys())
+        name_to_id = {}
     model_choice = st.selectbox("Model", options, index=0)
-    model = models[model_choice]
+    model = models.get(model_choice)          # None for API-only models (e.g. LSTM)
+    model_id = name_to_id.get(model_choice)   # sent to the API so it uses this model
     st.caption(f"Model list from API GET /models ({len(api_models)} offered)"
                if api_models else "Model list from the joblib files in the repo.")
 
     scenario = st.radio("River condition", ["Recent (actual)", "Rising river", "Flood watch"])
     offset = st.slider("Level offset (m)", -0.30, 1.50, 0.0, 0.05)
     with st.expander("About the model"):
+        _thr = f"'Flood' = level at/above {TRAIN_RISK_THRESHOLD_M} m (0.80 quantile)."
         if model_choice == "Logistic Regression":
-            st.write(f"Logistic Regression on Murray Bridge river levels. 'Flood' = level at/above "
-                     f"{TRAIN_RISK_THRESHOLD_M} m (0.80 quantile). Horizons extrapolate the recent trend.")
+            st.write(f"Logistic Regression on Murray Bridge river levels. {_thr} "
+                     "Horizons extrapolate the recent trend.")
+        elif model_choice == "XGBoost":
+            st.write(f"XGBoost (Optuna-tuned) on Murray Bridge river levels. {_thr} "
+                     "Trained on the chronological split from common.py.")
+        elif model_choice == "LSTM":
+            st.write("LSTM on the last 14 daily levels (a sequence model, served by the API). "
+                     f"{_thr} Trained on the chronological split; scored via /predict_series.")
         else:
-            st.write(f"Random Forest (400 trees, max depth 10) on Murray Bridge river levels. 'Flood' = "
-                     f"level at/above {TRAIN_RISK_THRESHOLD_M} m (0.80 quantile). Trained on the "
-                     f"chronological split from common.py. Horizons extrapolate the recent trend.")
+            st.write(f"Random Forest (Optuna-tuned) on Murray Bridge river levels. {_thr} "
+                     "Trained on the chronological split from common.py.")
 
 # ---- Header ----
 h1, h2 = st.columns([2.2, 1])
@@ -472,9 +494,12 @@ horizon = st.radio("Forecast horizon", ["24h", "48h", "72h"], index=1,
 days = {"24h": 1, "48h": 2, "72h": 3}[horizon]
 
 levels = project(apply_scenario(base_levels, scenario, offset), days)
-prob, band, feats, source = predict(api_url, levels, model)
-lo = predict_local(model, features_from_levels([v - 0.05 for v in levels]))
-hi = predict_local(model, features_from_levels([v + 0.05 for v in levels]))
+prob, band, feats, source = predict(api_url, levels, model, model_id)
+if model is not None:
+    lo = predict_local(model, features_from_levels([v - 0.05 for v in levels]))
+    hi = predict_local(model, features_from_levels([v + 0.05 for v in levels]))
+else:
+    lo = hi = prob   # API-only model (e.g. LSTM): no local ±5 cm band available
 blo, bhi = min(lo, hi), max(lo, hi)
 
 # ---- Main: map | right column ----
@@ -595,6 +620,7 @@ with right:
     with st.container(border=True):
         contribs = signed_contributions(model, feats, baseline)
         estimator = final_estimator(model)
+        shap_imp = load_shap_importance(model_choice)
         if contribs is not None:
             st.markdown("<div class='card-title'>Why this score</div>"
                         "<div class='muted'>per-feature contribution (exact for logistic regression)</div>",
@@ -615,8 +641,7 @@ with right:
             ).properties(height=132)
             zero = alt.Chart(pd.DataFrame({"x": [0]})).mark_rule(color="#c3ccd8").encode(x="x:Q")
             st.altair_chart(zero + bars, use_container_width=True)
-        elif hasattr(estimator, "feature_importances_"):
-            shap_imp = load_shap_importance(model_choice)
+        elif shap_imp is not None or hasattr(estimator, "feature_importances_"):
             if shap_imp is not None:
                 sub = "SHAP feature importance (precomputed · mean |impact|)"
                 imp_by_feat = shap_imp
