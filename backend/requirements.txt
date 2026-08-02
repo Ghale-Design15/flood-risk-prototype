@@ -6,10 +6,10 @@ numpy==1.26.4
 pandas==2.2.2
 scikit-learn==1.6.1
 xgboost==2.1.1
-# LSTM serving. The saved model is Keras 3.15.1, and TensorFlow bundles Keras, so
-# we need a TF recent enough to carry Keras >= 3.15.1. Interim: take a recent TF and
-# test on staging. Pin exactly once Ghale shares `pip freeze | grep -iE tensorflow|keras`.
-tensorflow-cpu>=2.18
+# LSTM serving. Pinned to match the training environment (Ghale) that saved
+# lstm.keras: TensorFlow 2.21.0 + Keras 3.15.1. Loading needs these versions.
+tensorflow-cpu==2.21.0
+keras==3.15.1
 # Alert audit log (Supabase) + email dispatch (SendGrid).
 supabase==2.7.4
 sendgrid==6.11.0
