@@ -177,6 +177,20 @@ the old 0.793 to 0.800 when regenerated against Manuela's week-10 scaled-LR mode
 Once the code is pushed: render.com → New Web Service → pick the repo → it reads
 `render.yaml`. Add `DEFAULT_MODEL` as an env var if you want to override the default.
 
+### Cold-start handling (so the demo never stalls)
+
+The free instance sleeps after ~15 min idle; the first request then pays a cold
+start (worse with the LSTM's TensorFlow load). Two safeguards:
+
+- **Keep it warm:** `.github/workflows/keep-alive.yml` pings `/health` every 10 min
+  and has a manual "Run workflow" button. Set repo variable `API_URL` to the Render
+  URL. Cron timing is best-effort, so also —
+- **Warm up before the demo:** run `python backend/warmup.py` (or pass the URL) a few
+  minutes before presenting. It pings `/health` until the service answers in under 3s.
+
+Front-ends should also send a `/health` ping on load and show a brief "warming up"
+state rather than blocking on the first prediction.
+
 ## CI (GitHub Actions)
 
 A ready workflow is in `ci.yml` — put it at `.github/workflows/ci.yml`. It installs
