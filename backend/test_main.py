@@ -99,6 +99,47 @@ def test_risk_band_thresholds():
     assert _risk_band(0.90) == "High"
 
 
+# ---- Ensemble (default model) ---------------------------------------------
+def test_ensemble_is_registered_and_default():
+    assert "ensemble" in main.MODELS
+    assert main.DEFAULT_MODEL == "ensemble"
+    assert main.MODELS["ensemble"]["kind"] == "ensemble"
+
+
+def test_ensemble_available_when_members_are():
+    # Available iff at least ENSEMBLE_MIN_MEMBERS tabular members are available.
+    n_members = len(main._ensemble_members("ensemble"))
+    assert main._available("ensemble") == (n_members >= main.ENSEMBLE_MIN_MEMBERS)
+
+
+def test_ensemble_is_soft_vote_of_members():
+    if not main._available("ensemble"):
+        return  # no member files on this checkout
+    feats = main.FloodFeatures(**SAMPLE)
+    members = main._ensemble_members("ensemble")
+    expected = sum(main._probability(m, feats) for m in members) / len(members)
+    got = main._probability_ensemble("ensemble", feats)
+    assert abs(got - expected) < 1e-9
+    assert 0.0 <= got <= 1.0
+
+
+def test_predict_uses_ensemble_by_default():
+    if not main._available("ensemble"):
+        return
+    r = client.post("/predict", json=SAMPLE)  # no "model" -> default
+    assert r.status_code == 200
+    assert r.json()["model"] == "ensemble"
+
+
+def test_predict_series_ensemble_returns_four_features():
+    if not main._available("ensemble"):
+        return
+    r = client.post("/predict_series",
+                    json={"levels": [0.72, 0.70, 0.67, 0.65, 0.69, 0.69, 0.73], "model": "ensemble"})
+    assert r.status_code == 200
+    assert set(r.json()["features"]) == set(FEATURE_ORDER)
+
+
 # ---- Alert audit chain ----------------------------------------------------
 import alerts
 

@@ -3,12 +3,14 @@ Flood Risk Prediction API — multi-model
 =======================================
 FastAPI service for the flood-risk prototype (River Murray catchment).
 
-Serves any of the team's trained models through one contract. Two kinds:
+Serves any of the team's trained models through one contract. Three kinds:
 
   * tabular models (Logistic Regression, Random Forest, XGBoost) score the four
     river-level features below via predict_proba, on /predict or /predict_series.
   * the sequence model (LSTM) scores a window of recent daily levels and is only
     available on /predict_series (it needs the raw series, not the flat features).
+  * the ensemble (the default) soft-votes over the tabular members: it averages
+    their probabilities and is served on both /predict and /predict_series.
 
     level_lag1     water level 1 day ago (m)
     level_lag2     water level 2 days ago (m)
@@ -62,13 +64,23 @@ METRICS_PATH = BASE_DIR.parent / "docs" / "metrics.json"
 #   kind "tabular"  -> sklearn-style estimator with predict_proba on the 4 features
 #   kind "sequence" -> Keras model scored on a window of recent daily levels; needs
 #                      an "aux" bundle (joblib dict with scaler, window, threshold)
-MODELS: Dict[str, Dict[str, str]] = {
+#   kind "ensemble" -> no file; soft-votes (averages predict_proba) over the
+#                      "members", which must be available tabular models
+MODELS: Dict[str, Dict[str, object]] = {
+    "ensemble": {"name": "Ensemble (soft-vote)", "kind": "ensemble",
+                 "members": ["logistic_regression", "random_forest", "xgboost"]},
     "logistic_regression": {"name": "Logistic Regression", "file": "logistic_regression_real.joblib", "kind": "tabular"},
     "random_forest": {"name": "Random Forest", "file": "random_forest.joblib", "kind": "tabular"},
     "xgboost": {"name": "XGBoost", "file": "xgboost.joblib", "kind": "tabular"},
     "lstm": {"name": "LSTM", "file": "lstm.keras", "kind": "sequence", "aux": "lstm_scaler.joblib"},
 }
-DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "random_forest")
+# The served ensemble is the default model (Manuela assembles the members;
+# override with the DEFAULT_MODEL env var, e.g. random_forest, if needed).
+DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "ensemble")
+
+# An ensemble is only offered when at least this many members are available,
+# so it stays a genuine multi-model vote rather than a single-model passthrough.
+ENSEMBLE_MIN_MEMBERS = 2
 
 _loaded: Dict[str, object] = {}   # id -> estimator (lazy cache)
 _metrics: Dict[str, dict] = {}    # id -> metrics dict
@@ -88,11 +100,20 @@ def _keras_available() -> bool:
     return importlib.util.find_spec("tensorflow") is not None
 
 
+def _ensemble_members(model_id: str) -> List[str]:
+    """Registered member ids of an ensemble that are themselves available."""
+    return [m for m in MODELS[model_id].get("members", []) if m in MODELS and _available(m)]
+
+
 def _available(model_id: str) -> bool:
     meta = MODELS[model_id]
+    kind = meta.get("kind", "tabular")
+    if kind == "ensemble":
+        # Available once enough of its member models can be served.
+        return len(_ensemble_members(model_id)) >= ENSEMBLE_MIN_MEMBERS
     if joblib is None or not _model_path(model_id).exists():
         return False
-    if meta.get("kind") == "sequence":
+    if kind == "sequence":
         # Needs Keras at runtime plus its companion scaler/window bundle.
         return _keras_available() and (MODEL_DIR / meta["aux"]).exists()
     return True
@@ -150,6 +171,25 @@ def _probability(model_id: str, feats: "FloodFeatures") -> float:
     model = _get_model(model_id)
     row = pd.DataFrame([[getattr(feats, f) for f in FEATURE_ORDER]], columns=FEATURE_ORDER)
     return float(model.predict_proba(row)[0][1])
+
+
+def _probability_ensemble(model_id: str, feats: "FloodFeatures") -> float:
+    """Soft-vote: mean of the member tabular models' flood probabilities.
+    Equal-weighted; switch to a weighted mean here if members are weighted."""
+    members = _ensemble_members(model_id)
+    if len(members) < ENSEMBLE_MIN_MEMBERS:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Ensemble '{model_id}' needs at least {ENSEMBLE_MIN_MEMBERS} available member models.",
+        )
+    return sum(_probability(m, feats) for m in members) / len(members)
+
+
+def _score_features(model_id: str, feats: "FloodFeatures") -> float:
+    """Route flat-feature scoring to the ensemble or a single tabular model."""
+    if _kind(model_id) == "ensemble":
+        return _probability_ensemble(model_id, feats)
+    return _probability(model_id, feats)
 
 
 def _probability_sequence(model_id: str, levels: List[float]) -> float:
@@ -291,7 +331,7 @@ def predict(req: PredictRequest) -> PredictionResponse:
                     f"Use /predict_series with at least {_sequence_window(model_id)} recent daily levels."),
         )
     feats = FloodFeatures(**{f: getattr(req, f) for f in FEATURE_ORDER})
-    p = _probability(model_id, feats)
+    p = _score_features(model_id, feats)
     return PredictionResponse(model=model_id, flood_probability=round(p, 4),
                               risk_band=_risk_band(p), features=feats.model_dump())
 
@@ -306,7 +346,7 @@ def predict_series(req: SeriesRequest) -> PredictionResponse:
                                   risk_band=_risk_band(p),
                                   features={"window": window, "levels_used": len(req.levels)})
     feats = _features_from_series(req.levels)
-    p = _probability(model_id, feats)
+    p = _score_features(model_id, feats)
     return PredictionResponse(model=model_id, flood_probability=round(p, 4),
                               risk_band=_risk_band(p),
                               features={k: round(v, 4) for k, v in feats.model_dump().items()})
