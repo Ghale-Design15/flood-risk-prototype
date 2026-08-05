@@ -1,15 +1,17 @@
-# API Contract — Flood Risk Prediction (v2, multi-model)
+# API Contract — Flood Risk Prediction (v3, ensemble default)
 
-Reference for Julieth's Week 9 backend tasks: model parameter, `GET /models`,
-Render deploy, and CI. This is a working draft — `main.py` and `test_main.py`
-in this folder already implement everything below and pass 10 tests.
+**FROZEN for Week 11 demo — do not change the request/response shape after this.**
+Any later internal tuning must keep this interface stable so the dashboard and the
+demo rehearsals stay valid. `main.py` and `test_main.py` implement everything below
+and pass 23 tests.
 
 ## The idea in one line
 
-Every model (Logistic Regression, Random Forest, XGBoost) trains through
-`notebooks/common.py`, so they all take the **same four features** and expose
-`predict_proba`. That means one contract serves all of them; the caller just
-names which model.
+The tabular models (Logistic Regression, Random Forest, XGBoost) all train through
+`notebooks/common.py`, so they take the **same four features** and expose
+`predict_proba`. One contract serves all of them; the caller just names which model.
+Two extras sit on top: the **ensemble** (the default) soft-votes over the tabular
+models, and the **LSTM** scores a raw daily-level series on `/predict_series`.
 
 ## Endpoints
 
@@ -17,31 +19,39 @@ names which model.
 ```json
 { "status": "ok",
   "features": ["level_lag1","level_lag2","level_roll7","level_change3"],
-  "default_model": "random_forest",
-  "available_models": ["logistic_regression","random_forest"],
+  "default_model": "ensemble",
+  "available_models": ["ensemble","logistic_regression","random_forest","xgboost"],
   "train_risk_threshold_m": 0.806 }
 ```
 
 ### `GET /models`
-Drives the dashboard's model dropdown.
+Drives the dashboard's model dropdown. `metrics` come from `docs/metrics.json`;
+entries still being evaluated report `null` until that file is updated.
 ```json
-[ { "id": "logistic_regression", "name": "Logistic Regression",
-    "available": true, "default": false,
-    "metrics": { "F1": 0.793, "MCC": 0.732, "RMSE": 0.304, "Brier": 0.092, "NSE": 0.492 } },
-  { "id": "random_forest", "name": "Random Forest",
+[ { "id": "ensemble", "name": "Ensemble (soft-vote)",
     "available": true, "default": true,
-    "metrics": { "F1": 0.932, "MCC": 0.910, "RMSE": 0.174, "Brier": 0.030, "NSE": 0.833 } } ]
+    "metrics": { "F1": 0.806, "MCC": 0.743, "RMSE": 0.271, "Brier": 0.074, "NSE": 0.596 } },
+  { "id": "logistic_regression", "name": "Logistic Regression",
+    "available": true, "default": false,
+    "metrics": { "F1": 0.800, "MCC": 0.741, "RMSE": 0.300, "Brier": 0.090, "NSE": 0.505 } },
+  { "id": "random_forest", "name": "Random Forest",
+    "available": true, "default": false,
+    "metrics": { "F1": 0.799, "MCC": 0.734, "RMSE": 0.264, "Brier": 0.070, "NSE": 0.618 } },
+  { "id": "xgboost", "name": "XGBoost",
+    "available": true, "default": false,
+    "metrics": { "F1": 0.802, "MCC": 0.738, "RMSE": 0.276, "Brier": 0.076, "NSE": 0.582 } } ]
 ```
 
 ### `POST /predict`
-Body — the four features, plus an optional `model`:
+Body — the four features. Omit `model` to use the default (the ensemble), or name
+any tabular model:
 ```json
 { "level_lag1": 0.73, "level_lag2": 0.69, "level_roll7": 0.68,
-  "level_change3": 0.06, "model": "random_forest" }
+  "level_change3": 0.06 }
 ```
-Response:
+Response (the `model` field echoes what actually served the call):
 ```json
-{ "model": "random_forest", "flood_probability": 0.069,
+{ "model": "ensemble", "flood_probability": 0.1118,
   "risk_band": "Low",
   "features": { "level_lag1":0.73, "level_lag2":0.69, "level_roll7":0.68, "level_change3":0.06 } }
 ```
@@ -55,11 +65,23 @@ The API derives the four features and returns the same response shape.
 
 ## Rules
 
-- `model` omitted → the default (`DEFAULT_MODEL`, currently `random_forest`).
+- `model` omitted → the default (`DEFAULT_MODEL`, currently `ensemble`; override
+  with the `DEFAULT_MODEL` env var).
 - Unknown model id → `404`. Registered but file missing on server → `409`.
 - No model files at all → `503`.
 - Fewer than 4 levels on `/predict_series` → `422`.
 - The response always echoes which `model` actually served the call.
+
+### `POST /predict` / `/predict_series` with the ensemble
+
+The **ensemble** is the default model. It has no file of its own: it soft-votes by
+averaging the `predict_proba` of its available tabular members
+(`logistic_regression`, `random_forest`, `xgboost`) and returns the mean
+probability. It is served on **both** `/predict` and `/predict_series` and returns
+the same four-feature response shape as a single tabular model. It is offered only
+while at least **2** members are available; otherwise it reports unavailable in
+`/models` and `/health` (a single available model would not be a real vote).
+Weighting is equal by default.
 
 ### `POST /predict_series` with the LSTM
 
@@ -116,7 +138,7 @@ the first broken link.
 1. Train it through `common.py` so it uses the same features.
 2. Save the `.joblib` into `backend/models/`.
 3. Add one line to the `MODELS` registry in `main.py`:
-   `"xgboost": {"name": "XGBoost", "file": "xgboost.joblib"}`
+   `"xgboost": {"name": "XGBoost", "file": "xgboost.joblib", "kind": "tabular"}`
 4. Add its metrics to `docs/metrics.json`.
 
 ## One thing to settle first (coordination)
@@ -127,14 +149,26 @@ the first broken link.
 
 ## Metrics note (chronological split from common.py)
 
-| Model | F1 | MCC |
-|---|---|---|
-| Persistence baseline | 0.796 | 0.732 |
-| Logistic Regression | 0.793 | 0.732 |
-| Random Forest | 0.932 | 0.910 |
+Honest, time-ordered numbers from `docs/metrics.json`. The earlier Random Forest
+F1 of 0.932 was **data leakage from a shuffled split** and has been removed.
 
-Random Forest is the model that beats the baseline, which is why it's the
-default. (These replace the older random-split numbers.)
+Regenerate with `python notebooks/eval_metrics.py --write` (same 954-day test fold).
+
+| Model | F1 | MCC | RMSE | Brier | NSE |
+|---|---|---|---|---|---|
+| Persistence baseline | 0.796 | 0.732 | – | – | – |
+| Logistic Regression | 0.800 | 0.741 | 0.300 | 0.090 | 0.505 |
+| Random Forest | 0.799 | 0.734 | 0.264 | 0.070 | 0.618 |
+| XGBoost | 0.802 | 0.738 | 0.276 | 0.076 | 0.582 |
+| **Ensemble (default)** | **0.806** | **0.743** | 0.271 | 0.074 | 0.596 |
+| LSTM | *pending* | *pending* | *pending* | *pending* | *pending* |
+
+The tabular models sit within one F1 point of the persistence baseline, which is
+the honest headline of the project. The **ensemble** is the default because its
+soft-vote gives the best F1 and MCC of any model with stable calibration, while
+Random Forest keeps the best Brier/NSE. The LSTM row is pending (sequence model,
+evaluated in its own notebook). Note: the Logistic Regression numbers moved from
+the old 0.793 to 0.800 when regenerated against Manuela's week-10 scaled-LR model.
 
 ## Render deploy (unchanged from before)
 
