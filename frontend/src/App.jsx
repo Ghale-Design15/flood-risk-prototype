@@ -83,7 +83,13 @@ export default function App() {
   const band = prediction?.risk_band ?? bandOf(prob ?? 0);
   const meta = BAND_META[band];
   const selected = models.find((m) => m.id === modelId);
-  const shownFeats = prediction?.features ?? localFeats;
+
+  // The tabular models return the four features they scored. The LSTM is a
+  // sequence model, so it reports its input window instead ({window, levels_used}).
+  // Detect which shape came back rather than assuming the four keys exist.
+  const apiFeats = prediction?.features;
+  const isTabular = FEATURES.every((f) => Number.isFinite(Number(apiFeats?.[f])));
+  const shownFeats = isTabular ? apiFeats : localFeats;
 
   const recipientEmails = RECIPIENT_DIRECTORY
     .filter((r) => recipients.includes(r.label))
@@ -208,17 +214,35 @@ export default function App() {
           <section className="card">
             <h2 className="card-title">Why this score</h2>
             <p className="muted">
-              Model inputs for this prediction. Feature importance and SHAP are reported in the
-              models and explainability section.
+              {isTabular || !prediction
+                ? "Model inputs for this prediction. Feature importance and SHAP are reported in the models and explainability section."
+                : `The ${selected?.name ?? "sequence"} model reads the raw daily level series, not the four summary features. SHAP for it is reported per day of the window.`}
             </p>
             <table className="feat">
               <tbody>
-                {FEATURES.map((f) => (
-                  <tr key={f}>
-                    <td>{FEATURE_LABEL[f]}</td>
-                    <td className="num">{Number(shownFeats[f]).toFixed(3)}</td>
-                  </tr>
-                ))}
+                {isTabular || !prediction ? (
+                  FEATURES.map((f) => (
+                    <tr key={f}>
+                      <td>{FEATURE_LABEL[f]}</td>
+                      <td className="num">{Number(shownFeats[f]).toFixed(3)}</td>
+                    </tr>
+                  ))
+                ) : (
+                  <>
+                    <tr>
+                      <td>Input window</td>
+                      <td className="num">{apiFeats.window} days</td>
+                    </tr>
+                    <tr>
+                      <td>Levels supplied</td>
+                      <td className="num">{apiFeats.levels_used}</td>
+                    </tr>
+                    <tr>
+                      <td>Most recent level</td>
+                      <td className="num">{levels[levels.length - 1].toFixed(3)} m</td>
+                    </tr>
+                  </>
+                )}
               </tbody>
             </table>
             {selected?.metrics && (
