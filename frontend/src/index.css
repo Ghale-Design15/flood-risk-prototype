@@ -1,0 +1,10 @@
+/* Base reset. Component styles live in App.css. */
+:root {
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+html, body, #root { min-height: 100%; }
+
+body { margin: 0; }
