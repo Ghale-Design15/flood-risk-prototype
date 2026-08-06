@@ -8,3 +8,10 @@ numpy==1.26.4
 pandas==2.2.2
 altair==5.3.0
 xgboost==2.1.1
+
+# LSTM. Used by notebooks/FloodRiskPrediction_LSTM.ipynb and
+# notebooks/precompute_shap.py, not by the dashboard at runtime.
+# backend/models/lstm.keras was saved with these exact versions. Keras is
+# pinned as well because the .keras format is tied to the Keras 3 line.
+tensorflow-cpu==2.21.0
+keras==3.15.1
